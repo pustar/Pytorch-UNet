@@ -16,8 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
 from torch.utils.data import DataLoader, random_split
 
-dir_img = 'data/imgs/'
-dir_mask = 'data/masks/'
+dir_img = 'data/imgs_test/'
+dir_mask = 'data/masks_test/'
 dir_checkpoint = 'checkpoints/'
 
 
@@ -28,9 +28,11 @@ def train_net(net,
               lr=0.1,
               val_percent=0.1,
               save_cp=True,
-              img_scale=0.5):
+              img_scale=0.5,
+              n_classes=2,
+              class_weights = [1,1],):
 
-    dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    dataset = BasicDataset(dir_img, dir_mask, img_scale, n_classes)
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
     train, val = random_split(dataset, [n_train, n_val])
@@ -51,9 +53,10 @@ def train_net(net,
         Images scaling:  {img_scale}
     ''')
 
-    optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8)
+    # optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8)
+    optimizer = optim.Adam(net.parameters(), lr=lr)
     if net.n_classes > 1:
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(weight=torch.Tensor(class_weights).to(device=device))
     else:
         criterion = nn.BCEWithLogitsLoss()
 
@@ -75,7 +78,8 @@ def train_net(net,
                 true_masks = true_masks.to(device=device, dtype=mask_type)
 
                 masks_pred = net(imgs)
-                loss = criterion(masks_pred, true_masks)
+
+                loss = criterion(masks_pred, true_masks.squeeze(1))
                 epoch_loss += loss.item()
                 writer.add_scalar('Loss/train', loss.item(), global_step)
 
@@ -87,20 +91,21 @@ def train_net(net,
 
                 pbar.update(imgs.shape[0])
                 global_step += 1
-                if global_step % (len(dataset) // (10 * batch_size)) == 0:
-                    val_score = eval_net(net, val_loader, device, n_val)
-                    if net.n_classes > 1:
-                        logging.info('Validation cross entropy: {}'.format(val_score))
-                        writer.add_scalar('Loss/test', val_score, global_step)
+                
+                # if global_step % (len(dataset) // (10 * batch_size)) == 0:
+                #     val_score = eval_net(net, val_loader, device, n_val)
+                #     if net.n_classes > 1:
+                #         logging.info('Validation cross entropy: {}'.format(val_score))
+                #         writer.add_scalar('Loss/test', val_score, global_step)
 
-                    else:
-                        logging.info('Validation Dice Coeff: {}'.format(val_score))
-                        writer.add_scalar('Dice/test', val_score, global_step)
+                #     else:
+                #         logging.info('Validation Dice Coeff: {}'.format(val_score))
+                #         writer.add_scalar('Dice/test', val_score, global_step)
 
-                    writer.add_images('images', imgs, global_step)
-                    if net.n_classes == 1:
-                        writer.add_images('masks/true', true_masks, global_step)
-                        writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
+                #     writer.add_images('images', imgs, global_step)
+                #     if net.n_classes == 1:
+                #         writer.add_images('masks/true', true_masks, global_step)
+                #         writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
 
         if save_cp:
             try:
@@ -124,6 +129,12 @@ def get_args():
                         help='Batch size', dest='batchsize')
     parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.1,
                         help='Learning rate', dest='lr')
+    parser.add_argument('-w', '--weights', nargs='*',
+                        help='Class weights to use in loss calculation')
+    parser.add_argument('--n_classes', type=int, default=1,
+                        help='Number of classes in the segmentation')
+    parser.add_argument('--n_channels', type=int, default=3,
+                        help='Number of channels in input images')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
     parser.add_argument('-s', '--scale', dest='scale', type=float, default=0.5,
@@ -146,7 +157,17 @@ if __name__ == '__main__':
     #   - For 1 class and background, use n_classes=1
     #   - For 2 classes, use n_classes=1
     #   - For N > 2 classes, use n_classes=N
-    net = UNet(n_channels=3, n_classes=1)
+
+    n_classes = args.n_classes
+    n_channels = args.n_channels
+    class_weights = np.array(args.weights).astype(np.float)
+    assert len(class_weights) == n_classes, \
+        'Lenght of the weights-vector should be equal to the number of classes'
+
+    net = UNet(n_channels=3, n_classes=n_classes)
+
+    
+
     logging.info(f'Network:\n'
                  f'\t{net.n_channels} input channels\n'
                  f'\t{net.n_classes} output channels (classes)\n'
@@ -169,6 +190,8 @@ if __name__ == '__main__':
                   lr=args.lr,
                   device=device,
                   img_scale=args.scale,
+                  n_classes=5,
+                  class_weights = class_weights,
                   val_percent=args.val / 100)
     except KeyboardInterrupt:
         torch.save(net.state_dict(), 'INTERRUPTED.pth')
